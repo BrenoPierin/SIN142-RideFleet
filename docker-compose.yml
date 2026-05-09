@@ -1,0 +1,8 @@
+services:
+  ridefleet:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ENV=development
+    # Na Semana 2: adicionar PostgreSQL, Redis e Load Balancer aqui
