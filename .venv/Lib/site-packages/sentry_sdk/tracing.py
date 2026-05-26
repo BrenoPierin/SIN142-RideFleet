@@ -965,9 +965,7 @@ class Transaction(Span):
 
         # For backwards compatibility, we must handle the case where `scope`
         # or `hub` could both either be a `Scope` or a `Hub`.
-        scope: "Optional[sentry_sdk.Scope]" = self._get_scope_from_finish_args(
-            scope, hub
-        )
+        scope = self._get_scope_from_finish_args(scope, hub)
 
         scope = scope or self.scope or sentry_sdk.get_current_scope()
         client = sentry_sdk.get_client()
@@ -1042,11 +1040,23 @@ class Transaction(Span):
 
             return None
 
-        finished_spans = [
-            span.to_json()
-            for span in self._span_recorder.spans
-            if span.timestamp is not None
-        ]
+        finished_spans = []
+        has_gen_ai_span = False
+        if client.options.get("stream_gen_ai_spans", False):
+            for span in self._span_recorder.spans:
+                if span.timestamp is None:
+                    continue
+
+                if isinstance(span.op, str) and span.op.startswith("gen_ai."):
+                    has_gen_ai_span = True
+
+                finished_spans.append(span.to_json())
+        else:
+            finished_spans = [
+                span.to_json()
+                for span in self._span_recorder.spans
+                if span.timestamp is not None
+            ]
 
         len_diff = len(self._span_recorder.spans) - len(finished_spans)
         dropped_spans = len_diff + self._span_recorder.dropped_spans
@@ -1077,6 +1087,9 @@ class Transaction(Span):
 
         if dropped_spans > 0:
             event["_dropped_spans"] = dropped_spans
+
+        if has_gen_ai_span:
+            event["_has_gen_ai_span"] = True
 
         if self._profile is not None and self._profile.valid():
             event["profile"] = self._profile
