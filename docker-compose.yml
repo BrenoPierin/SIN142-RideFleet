@@ -1,6 +1,5 @@
 services:
 
-  # --- Load Balancer ---
   nginx:
     image: nginx:alpine
     ports:
@@ -8,55 +7,69 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      ridefleet-1:
-        condition: service_healthy
-      ridefleet-2:
-        condition: service_healthy
+      - ridefleet-1
+      - ridefleet-2
+    networks:
+      - ridefleet-net
     restart: unless-stopped
 
-  # --- Instância 1 do serviço ---
   ridefleet-1:
     build: .
+    container_name: ridefleet-grupo-a-1
     environment:
       - DATABASE_URL=postgresql+asyncpg://ridefleet:ridefleet123@db:5432/ridefleet
       - REDIS_URL=redis://redis:6379
-      - SERVICE_NAME=ridefleet-1
-      - ENV=production
+      - SERVICE_NAME=ridefleet-grupo-a
+      # O Core alcança o Nginx do RideFleet via host.docker.internal:8000
+      - SERVICE_URL=http://host.docker.internal:8000
+      - CORE_URL=http://host.docker.internal:8080/api/v1
+      - CORE_API_KEY=${CORE_API_KEY:-}
+      - MIN_ETA_SECONDS=120
+      - BASE_PRICE=12.0
+      - MIN_AVAILABLE_DRIVERS=1
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - ridefleet-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\""]
-      interval: 10s
+      test: ["CMD", "python", "-c", "import httpx,sys; sys.exit(0 if httpx.get('http://localhost:8000/health',timeout=3).status_code==200 else 1)"]
+      interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     restart: unless-stopped
 
-  # --- Instância 2 do serviço ---
   ridefleet-2:
     build: .
+    container_name: ridefleet-grupo-a-2
     environment:
       - DATABASE_URL=postgresql+asyncpg://ridefleet:ridefleet123@db:5432/ridefleet
       - REDIS_URL=redis://redis:6379
-      - SERVICE_NAME=ridefleet-2
-      - ENV=production
+      - SERVICE_NAME=ridefleet-grupo-a
+      - SERVICE_URL=http://host.docker.internal:8000
+      - CORE_URL=http://host.docker.internal:8080/api/v1
+      - CORE_API_KEY=${CORE_API_KEY:-}
+      - MIN_ETA_SECONDS=120
+      - BASE_PRICE=12.0
+      - MIN_AVAILABLE_DRIVERS=1
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - ridefleet-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\""]
-      interval: 10s
+      test: ["CMD", "python", "-c", "import httpx,sys; sys.exit(0 if httpx.get('http://localhost:8000/health',timeout=3).status_code==200 else 1)"]
+      interval: 15s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 20s
     restart: unless-stopped
 
-  # --- PostgreSQL ---
   db:
     image: postgres:16-alpine
     environment:
@@ -70,12 +83,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - ridefleet-net
     restart: unless-stopped
 
-  # --- Redis (fila de corridas) ---
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes   # persistência AOF
+    command: redis-server --appendonly yes
     volumes:
       - redis_data:/data
     healthcheck:
@@ -83,8 +97,15 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - ridefleet-net
     restart: unless-stopped
 
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  ridefleet-net:
+    external: true   # Rede criada pelo Core — não recrie aqui
+    name: ridefleet-net
