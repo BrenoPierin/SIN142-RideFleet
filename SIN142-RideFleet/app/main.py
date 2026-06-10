@@ -9,6 +9,7 @@ Adicionado:
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.db.database import create_tables
 from app.routes import rides, drivers, passengers, health
@@ -56,6 +57,17 @@ app = FastAPI(
     description="SIN 142 — Sistemas Distribuídos UFV 2026/1",
     version="0.3.0",
     lifespan=lifespan,
+)
+
+# CORS — permite que o front-end (navegador) consuma a API.
+# allow_credentials=False permite usar "*" em allow_origins; estes endpoints
+# nao usam cookies/sessao. Em producao, restrinja allow_origins as origens reais.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Rotas existentes
