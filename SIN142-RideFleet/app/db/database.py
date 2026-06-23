@@ -8,7 +8,7 @@ from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://ridefleet:ridefleet123@db:5432/ridefleet")
 
-engine = create_async_engine(DATABASE_URL, echo=True)
+engine = create_async_engine(DATABASE_URL, echo=os.getenv("SQL_ECHO", "false").lower() in ("1", "true", "yes"))
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,

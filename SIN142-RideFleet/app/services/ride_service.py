@@ -13,6 +13,7 @@ from app.models.ride import RideCreate, RideStatus, VALID_TRANSITIONS
 from app.models.driver import DriverStatus
 from app.core.logging import log_ride_event
 from app.core import queue
+from app.core import metrics
 
 import os
 MIN_AVAILABLE_DRIVERS = int(os.getenv("MIN_AVAILABLE_DRIVERS", "1"))
@@ -81,6 +82,23 @@ async def transition_ride(
             f"Permitidas: {allowed}"
         )
 
+    # Limitação: só é possível ir para MATCH se houver motorista disponível.
+    # (Corridas delegadas recebidas são tratadas pelo inbox_worker, não aqui.)
+    if new_status == RideStatus.MATCH and not ride.delegated_from:
+        if driver_id:
+            cand = await db.get(DriverORM, driver_id)
+            if cand is None or cand.status != DriverStatus.AVAILABLE:
+                raise ValueError("Motorista informado não está disponível.")
+        else:
+            cand = (await db.execute(
+                select(DriverORM)
+                .where(DriverORM.status == DriverStatus.AVAILABLE)
+                .limit(1)
+            )).scalar_one_or_none()
+            if cand is None:
+                raise ValueError("Sem motorista disponível para atender a corrida.")
+            driver_id = cand.id
+
     estado_anterior = ride.status
     ride.status = new_status
     ride.updated_at = datetime.utcnow()
@@ -94,6 +112,9 @@ async def transition_ride(
         if driver:
             driver.status = DriverStatus.BUSY
             driver.current_ride_id = ride_id
+        # Corrida atendida localmente (não veio de delegação de outro grupo).
+        if not ride.delegated_from:
+            metrics.inc_local_ride()
 
     # Motorista fica disponível ao final
     if new_status in (RideStatus.COMPLETE, RideStatus.CANCELLED):

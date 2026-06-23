@@ -1,0 +1,20 @@
+# Prometheus do RideFleet (grupo A) — raspa CADA instância diretamente
+# (não via nginx), para o Grafana mostrar a carga por instância.
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: ridefleet-grupo-a
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - ridefleet-grupo-a-1:8000
+          - ridefleet-grupo-a-2:8000
+        labels:
+          group: ridefleet-grupo-a
+
+  # O próprio Prometheus (opcional)
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

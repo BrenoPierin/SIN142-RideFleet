@@ -595,13 +595,16 @@ function Map({ status, prog, eta }) {
 /* =================== OPERADOR =================== */
 function Operator({ api, demo, health }) {
   const [rides, setRides] = useState([]);
+  const [drivers, setDrivers] = useState([]);
   const [over, setOver] = useState(null);
   const [busy, setBusy] = useState(null);
   const [drv, setDrv] = useState({ name: "", license_plate: "", phone: "" });
   const [msg, setMsg] = useState("");
+  const [histFilter, setHistFilter] = useState("all");   // all | complete | cancelled
 
   const refresh = useCallback(async () => {
     try { const r = await api("/rides/"); if (Array.isArray(r)) setRides(r); } catch { /* */ }
+    try { const d = await api("/drivers/"); if (Array.isArray(d)) setDrivers(d); } catch { /* */ }
     try { const o = await api("/rides/overflow/check"); setOver(o); } catch { /* */ }
   }, [api]);
 
@@ -633,6 +636,12 @@ function Operator({ api, demo, health }) {
   const active = rides.filter((r) => !["complete", "cancelled"].includes(r.status));
   const history = rides.filter((r) => ["complete", "cancelled"].includes(r.status));
   const delegatedCount = rides.filter((r) => r.delegated_from || r.delegated_to).length;
+  const histSorted = [...history].sort((a, b) => new Date(b.updated_at || 0) - new Date(a.updated_at || 0));
+  const histConcluidas = history.filter((r) => r.status === "complete").length;
+  const histCanceladas = history.filter((r) => r.status === "cancelled").length;
+  const histList = histSorted.filter((r) => histFilter === "all" || r.status === histFilter);
+  const driverMap = {};
+  for (const d of drivers) driverMap[d.id] = d;
 
   return (
     <div className="fade">
@@ -673,7 +682,7 @@ function Operator({ api, demo, health }) {
                             : r.delegated_to
                             ? <span className="chip c-amber"><i />→ {r.delegated_to}</span>
                             : <span style={{ color: "var(--faint)", fontSize: 12 }}>local</span>}</td>
-                          <td className="mono">{r.driver_id ? shortId(r.driver_id) : "—"}</td>
+                          <td><DriverCell d={driverMap[r.driver_id]} id={r.driver_id} /></td>
                           <td><button className="btn sm" disabled={busy === r.id} onClick={() => advance(r)}>
                                 {busy === r.id ? <span className="spin" /> : "Avancar"}</button></td>
                         </tr>
@@ -699,27 +708,59 @@ function Operator({ api, demo, health }) {
         </div>
 
         {/* historico */}
-        <div className="card">
-          <div className="ctitle">Historico</div>
-          {history.length === 0
-            ? <div className="empty" style={{ padding: 22 }}><div>Sem corridas concluidas ainda.</div></div>
+        <div className="card" style={{ gridColumn: "1 / -1" }}>
+          <div className="ctitle" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+            <span>Historico</span>
+            <span style={{ fontSize: 11.5, color: "var(--faint)", fontWeight: 400 }}>
+              {histConcluidas} concluida(s) · {histCanceladas} cancelada(s)
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: 6, margin: "0 0 12px" }}>
+            {[["all", "Todas"], ["complete", "Concluidas"], ["cancelled", "Canceladas"]].map(([k, lbl]) => (
+              <button key={k} className="btn sm" onClick={() => setHistFilter(k)}
+                style={{
+                  padding: "4px 10px", fontSize: 12,
+                  background: histFilter === k ? "var(--panel2)" : "transparent",
+                  borderColor: histFilter === k ? "var(--line2)" : "var(--line)",
+                  color: histFilter === k ? "var(--txt)" : "var(--muted)",
+                }}>{lbl}</button>
+            ))}
+          </div>
+
+          {histList.length === 0
+            ? <div className="empty" style={{ padding: 22 }}><div>Nenhuma corrida neste filtro.</div></div>
             : (
-              <div style={{ maxHeight: 280, overflowY: "auto" }}>
-                {history.slice(0, 30).map((r) => {
-                  const s = STATUS[r.status] || STATUS.complete;
-                  return (
-                    <div key={r.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between",
-                      padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                          {r.origin} → {r.destination}</div>
-                        <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>
-                          {shortId(r.id)} · {fmtTime(r.updated_at)}{r.delegated_from ? ` · via ${r.delegated_from}` : ""}</div>
-                      </div>
-                      <span className={`chip c-${s.color}`}><i />{r.status}</span>
-                    </div>
-                  );
-                })}
+              <div style={{ maxHeight: 460, overflowY: "auto", overflowX: "auto" }}>
+                <table className="tbl">
+                  <thead><tr>
+                    <th>Trajeto</th><th>Status</th><th>Tipo</th><th>Motorista</th>
+                    <th>Passageiro</th><th>Concluida em</th><th>Duracao</th><th>Corrida</th>
+                  </tr></thead>
+                  <tbody>
+                    {histList.slice(0, 80).map((r) => {
+                      const s = STATUS[r.status] || STATUS.complete;
+                      const dur = fmtDuration(r.created_at, r.updated_at);
+                      const tipo = r.delegated_from
+                        ? { txt: `recebida · ${r.delegated_from}`, color: "var(--magenta)", bg: "rgba(240,110,203,.14)" }
+                        : r.delegated_to
+                        ? { txt: `enviada · ${r.delegated_to}`, color: "var(--amber)", bg: "rgba(246,183,60,.14)" }
+                        : { txt: "local", color: "var(--faint)", bg: "rgba(90,107,133,.12)" };
+                      return (
+                        <tr key={r.id}>
+                          <td style={{ maxWidth: 280 }}>{r.origin} <span style={{ color: "var(--faint)" }}>→</span> {r.destination}</td>
+                          <td><span className={`chip c-${s.color}`}><i />{s.label}</span></td>
+                          <td><span className="chip" style={{ background: tipo.bg, color: tipo.color, fontSize: 11 }}><i style={{ background: tipo.color }} />{tipo.txt}</span></td>
+                          <td><DriverCell d={driverMap[r.driver_id]} id={r.driver_id} /></td>
+                          <td className="mono" style={{ fontSize: 11.5 }}>{shortId(r.passenger_id)}</td>
+                          <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>{fmtDateTime(r.updated_at)}</td>
+                          <td style={{ fontSize: 12 }}>{dur || "—"}</td>
+                          <td className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{shortId(r.id)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
         </div>
@@ -735,5 +776,23 @@ function Kpi({ v, k, c }) {
 /* ---------- helpers ---------- */
 function shortId(id) { return id ? String(id).slice(0, 8) : "—"; }
 function fmtTime(t) { if (!t) return "—"; try { return new Date(t).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); } catch { return "—"; } }
+function fmtDateTime(t) { if (!t) return "—"; try { return new Date(t).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }); } catch { return "—"; } }
+function fmtDuration(a, b) {
+  if (!a || !b) return null;
+  const ms = new Date(b) - new Date(a);
+  if (!(ms > 0)) return null;
+  const s = Math.round(ms / 1000), m = Math.floor(s / 60), sec = s % 60;
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+function DriverCell({ d, id }) {
+  if (!id) return <span style={{ color: "var(--faint)" }}>—</span>;
+  if (!d) return <span className="mono" style={{ fontSize: 11.5 }}>{shortId(id)}</span>;
+  return (
+    <div style={{ lineHeight: 1.3 }}>
+      <div style={{ fontSize: 12.5 }}>{d.name || "—"}</div>
+      <div className="mono" style={{ fontSize: 10.5, color: "var(--faint)" }}>{d.license_plate || "?"} · {shortId(id)}</div>
+    </div>
+  );
+}
 function tone(c) { return { amber: "#f6b73c", blue: "#5aa2ff", cyan: "#36d4c4", green: "#3ddc97", red: "#ff5f6e", magenta: "#f06ecb" }[c] || "#e7eef8"; }
 function heroBg(c) { const t = tone(c); return `radial-gradient(circle at 30% 30%, ${t}33, ${t}10)`; }

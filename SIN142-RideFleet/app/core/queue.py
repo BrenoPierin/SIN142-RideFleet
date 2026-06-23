@@ -102,6 +102,27 @@ async def ack_inbox(msg_id: str) -> None:
         await r.xack(STREAM_INBOX, GROUP_NAME, msg_id)
 
 
+async def read_pending_inbox(consumer: str, count: int = 10) -> list[dict]:
+    """
+    Relê as mensagens JÁ entregues a ESTE consumidor e ainda sem ACK (id "0").
+    Diferente de reclaim_inbox (que só pega mensagens ociosas há >60s), aqui
+    relemos imediatamente as nossas pendentes — é o que permite pegar uma
+    corrida que ficou na fila assim que um motorista novo fica disponível.
+    """
+    async with get_redis() as r:
+        await ensure_groups(r)
+        results = await r.xreadgroup(
+            GROUP_NAME, consumer, {STREAM_INBOX: "0"}, count=count,
+        )
+        if not results:
+            return []
+        _, messages = results[0]
+        return [
+            {"msg_id": msg_id, "data": json.loads(fields["payload"])}
+            for msg_id, fields in messages
+        ]
+
+
 async def reclaim_inbox(consumer: str, count: int = 10) -> list[dict]:
     """
     Reivindica mensagens travadas (sem ACK por mais de CLAIM_MIN_IDLE_MS).
@@ -170,11 +191,21 @@ async def ack_outbox(msg_id: str) -> None:
 # ── Utilitários ────────────────────────────────────────────────────────────
 
 async def queue_sizes() -> dict:
-    """Tamanho atual das filas — usado no /health."""
+    """
+    Tamanho atual das filas — usado no /health e nas métricas.
+
+    Reporta o número de mensagens PENDENTES (lidas mas ainda sem ACK — ou seja,
+    corridas aguardando/em processamento), e NÃO o XLEN total do stream. Assim
+    o valor sobe quando chega corrida e cai a 0 quando ela é processada ou
+    descartada — refletindo a fila real.
+    """
     async with get_redis() as r:
         try:
-            inbox  = await r.xlen(STREAM_INBOX)
-            outbox = await r.xlen(STREAM_OUTBOX)
+            await ensure_groups(r)
+            inbox_info  = await r.xpending(STREAM_INBOX, GROUP_NAME)
+            outbox_info = await r.xpending(STREAM_OUTBOX, GROUP_NAME)
+            inbox  = inbox_info["pending"]  if inbox_info  else 0
+            outbox = outbox_info["pending"] if outbox_info else 0
         except Exception:
             inbox = outbox = -1
     return {"inbox": inbox, "outbox": outbox}

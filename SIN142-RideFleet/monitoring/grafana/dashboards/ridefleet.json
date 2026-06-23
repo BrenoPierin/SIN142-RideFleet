@@ -1,0 +1,136 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "timezone": "browser",
+  "title": "RideFleet — Visão geral",
+  "uid": "ridefleet-overview",
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Throughput (req/s) por instância",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "sum by (service_instance) (rate(ridefleet_http_requests_total[1m]))",
+          "legendFormat": "{{service_instance}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latência p95 por endpoint (s)",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(ridefleet_ride_request_latency_seconds_bucket[5m])))",
+          "legendFormat": "{{endpoint}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Locais vs. delegadas para fora (corridas/s)",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "sum(rate(ridefleet_rides_local_total[5m]))",
+          "legendFormat": "locais"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "sum(rate(ridefleet_rides_delegated_out_total[5m]))",
+          "legendFormat": "delegadas (out)"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Recebidas por delegação (por origem)",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "sum by (origin_service) (rate(ridefleet_rides_received_delegation_total[5m]))",
+          "legendFormat": "{{origin_service}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Tamanho das filas",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "ridefleet_queue_size",
+          "legendFormat": "{{service_instance}} · {{queue}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Motoristas disponíveis",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "ridefleet_available_drivers",
+          "legendFormat": "{{service_instance}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Estado do serviço (0=disp · 1=congest · 2=down)",
+      "datasource": { "type": "prometheus", "uid": "rideprom" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "disponível", "color": "green" } } },
+            { "type": "value", "options": { "1": { "text": "congestionado", "color": "yellow" } } },
+            { "type": "value", "options": { "2": { "text": "fora do ar", "color": "red" } } }
+          ],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "rideprom" },
+          "expr": "ridefleet_service_state",
+          "legendFormat": "{{service_instance}}"
+        }
+      ]
+    }
+  ]
+}

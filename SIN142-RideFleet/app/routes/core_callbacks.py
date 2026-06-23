@@ -8,8 +8,10 @@ O Core faz HTTP para o serviceUrl registrado em dois momentos:
 Estes endpoints são OBRIGATÓRIOS para a integração funcionar.
 """
 import os
+import asyncio
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,7 @@ from app.models.ride import RideStatus
 from app.core import lamport, core_client
 from app.core.logging import log_ride_event, logger
 from app.core.queue import enqueue_inbox
+from app.core import metrics
 from sqlalchemy import select, func
 
 router = APIRouter(tags=["core-callbacks"])
@@ -78,8 +81,11 @@ async def receive_auction_offer(
 
     O Core seleciona o vencedor pelo menor preço, desempatando pelo menor ETA.
     """
-    # Atualiza clock de Lamport com o timestamp recebido
-    new_ts = await lamport.update(payload.logicalTimestamp)
+    # Lamport com timeout: um Redis lento NAO pode segurar a resposta do leilao.
+    try:
+        new_ts = await asyncio.wait_for(lamport.update(payload.logicalTimestamp), timeout=2.0)
+    except Exception:
+        new_ts = payload.logicalTimestamp + 1
 
     log_ride_event(
         "leilao_recebido",
@@ -88,30 +94,38 @@ async def receive_auction_offer(
         estado_novo="evaluating",
     )
 
-    # Conta motoristas disponíveis
-    result = await db.execute(
-        select(func.count()).where(DriverORM.status == DriverStatus.AVAILABLE)
-    )
-    available = result.scalar_one()
-
-    if available == 0:
-        log_ride_event(
-            "leilao_recusado",
-            corrida_id=payload.rideUuid,
-            nivel="WARN",
+    # Conta motoristas disponiveis, tambem com timeout para nao travar o leilao.
+    available = None
+    try:
+        result = await asyncio.wait_for(
+            db.execute(
+                select(func.count()).where(DriverORM.status == DriverStatus.AVAILABLE)
+            ),
+            timeout=2.0,
         )
-        # 204 = recusa — passa o leilão
-        from fastapi.responses import Response
+        available = result.scalar_one()
+    except Exception as e:
+        logger.warning(
+            f"contagem de motoristas falhou no leilao: {e}",
+            extra={"evento": "leilao_db_timeout"},
+        )
+
+    # Recusa apenas quando confirmamos zero motoristas. Se a contagem falhou
+    # (available is None), ainda damos lance para nao perder o leilao por uma
+    # lentidao pontual de banco/redis.
+    if available == 0:
+        log_ride_event("leilao_recusado", corrida_id=payload.rideUuid, nivel="WARN")
         return Response(status_code=204)
 
-    # Calcula proposta: ETA baseado em disponibilidade, preço fixo + variação
-    eta = MIN_ETA + max(0, (3 - available) * 30)  # mais motoristas = ETA menor
+    n = available if available is not None else 1
+    eta = MIN_ETA + max(0, (3 - n) * 30)  # mais motoristas = ETA menor
     price = round(BASE_PRICE + (eta / 60) * 2.5, 2)
 
     log_ride_event(
         "leilao_proposta_enviada",
         corrida_id=payload.rideUuid,
         estado_novo="proposed",
+        motoristas_livres=n,
     )
 
     return {
@@ -146,6 +160,8 @@ async def receive_assignment(
         servico_origem=payload.originServiceId,
         estado_novo="assigned",
     )
+
+    metrics.inc_received_delegation(payload.originServiceId)
 
     # Enfileira na inbox — o worker vai atribuir motorista e confirmar
     await enqueue_inbox({

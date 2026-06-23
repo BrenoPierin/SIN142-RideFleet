@@ -9,4 +9,7 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+# 1 worker por container: a exposição Prometheus assume processo único.
+# A escala/distribuição de carga é feita por múltiplos containers + LB,
+# não por múltiplos workers no mesmo container.
+CMD ["fastapi", "run", "app/main.py", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

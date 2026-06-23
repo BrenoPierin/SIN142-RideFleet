@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core import core_client, lamport
 from app.core.queue import dequeue_outbox, ack_outbox
 from app.core.logging import log_ride_event, logger
+from app.core import metrics
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://ridefleet:ridefleet123@db:5432/ridefleet")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "ridefleet")
@@ -64,6 +65,7 @@ async def delegation_worker():
                         estado_novo="delegated",
                     )
 
+                    metrics.inc_delegated_out()
                     await ack_outbox(msg_id)
 
                 except Exception as e:
