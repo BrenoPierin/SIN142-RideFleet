@@ -2,8 +2,6 @@ apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
-    uid: rideprom
     access: proxy
     url: http://ridefleet-a-prometheus:9090
     isDefault: true
-    editable: true

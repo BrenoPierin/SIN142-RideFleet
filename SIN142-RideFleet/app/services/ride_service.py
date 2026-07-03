@@ -17,6 +17,8 @@ from app.core import metrics
 
 import os
 MIN_AVAILABLE_DRIVERS = int(os.getenv("MIN_AVAILABLE_DRIVERS", "1"))
+# Rótulo gravado em delegated_to quando a corrida é enviada ao leilão do Core.
+DELEGATED_LABEL = os.getenv("DELEGATED_LABEL", "leilão")
 
 
 async def create_ride(db: AsyncSession, data: RideCreate) -> RideORM:
@@ -37,6 +39,12 @@ async def create_ride(db: AsyncSession, data: RideCreate) -> RideORM:
     # Verifica overflow e enfileira na saída se necessário
     available = await count_available_drivers(db)
     if available < MIN_AVAILABLE_DRIVERS:
+        # Marca a corrida local como DELEGADA (enviada ao leilão do Core), para
+        # o front sinalizar. hasattr protege caso a coluna não exista no banco.
+        if hasattr(RideORM, "delegated_to"):
+            ride.delegated_to = DELEGATED_LABEL
+            await db.flush()
+
         await queue.enqueue_outbox({
             "id": ride.id,
             "passenger_id": ride.passenger_id,
@@ -44,6 +52,13 @@ async def create_ride(db: AsyncSession, data: RideCreate) -> RideORM:
             "destination": ride.destination,
             "status": ride.status,
         })
+
+        log_ride_event(
+            "corrida_delegada_leilao",
+            ride.id,
+            estado_novo=ride.status,
+            nivel="WARN",
+        )
 
     return ride
 

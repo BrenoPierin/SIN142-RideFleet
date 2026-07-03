@@ -509,7 +509,7 @@ function Tracking({ ride, onNew }) {
         {ride.delegated_to && !ride.delegated_from && (
           <div className="deleg" style={{ background: "linear-gradient(120deg, rgba(246,183,60,.12), rgba(90,162,255,.08))", borderColor: "rgba(246,183,60,.4)" }}>
             <div className="di" style={{ background: "rgba(246,183,60,.16)" }}>{Ico.swap({ stroke: "var(--amber)", width: 18, height: 18 })}</div>
-            <div><b style={{ color: "var(--amber)" }}>Delegada para fora</b>
+            <div><b style={{ color: "var(--amber)" }}>DELEGADO — enviada ao leilão</b>
               <span>Encaminhada ao servico <b style={{ color: "var(--txt)" }} className="mono">{ride.delegated_to}</b> (overflow).</span></div>
           </div>
         )}
@@ -680,7 +680,7 @@ function Operator({ api, demo, health }) {
                           <td>{r.delegated_from
                             ? <span className="chip" style={{ background: "rgba(240,110,203,.14)", color: "var(--magenta)" }}><i style={{ background: "var(--magenta)" }} />{r.delegated_from}</span>
                             : r.delegated_to
-                            ? <span className="chip c-amber"><i />→ {r.delegated_to}</span>
+                            ? <span className="chip c-amber" title={`Enviada ao leilão do Core (${r.delegated_to})`}><i />DELEGADO</span>
                             : <span style={{ color: "var(--faint)", fontSize: 12 }}>local</span>}</td>
                           <td><DriverCell d={driverMap[r.driver_id]} id={r.driver_id} /></td>
                           <td><button className="btn sm" disabled={busy === r.id} onClick={() => advance(r)}>
@@ -744,7 +744,7 @@ function Operator({ api, demo, health }) {
                       const tipo = r.delegated_from
                         ? { txt: `recebida · ${r.delegated_from}`, color: "var(--magenta)", bg: "rgba(240,110,203,.14)" }
                         : r.delegated_to
-                        ? { txt: `enviada · ${r.delegated_to}`, color: "var(--amber)", bg: "rgba(246,183,60,.14)" }
+                        ? { txt: `delegado · ${r.delegated_to}`, color: "var(--amber)", bg: "rgba(246,183,60,.14)" }
                         : { txt: "local", color: "var(--faint)", bg: "rgba(90,107,133,.12)" };
                       return (
                         <tr key={r.id}>

@@ -10,6 +10,8 @@ Processa corridas delegadas recebidas de outros grupos:
 """
 import asyncio
 import os
+import httpx
+import redis.asyncio as aioredis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy import select
 from app.db.orm_models import DriverORM, RideORM
@@ -24,9 +26,19 @@ import uuid
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql+asyncpg://ridefleet:ridefleet123@db:5432/ridefleet")
 SERVICE_NAME = os.getenv("SERVICE_NAME", "ridefleet")
+# Identidade UNICA da instancia — cada replica precisa de um nome de
+# consumidor proprio no grupo do Redis, senao as duas instancias pegam a
+# MESMA corrida e brigam pelo lock/transicao no Core (saga falha -> descarte).
+INSTANCE_ID = os.getenv("INSTANCE_ID") or os.getenv("HOSTNAME") or SERVICE_NAME
 # Tempo máximo que uma corrida pode esperar na inbox sem motorista antes de
 # ser descartada (fallback quando não há lockExpiresAt no payload).
 MAX_INBOX_WAIT_S = int(os.getenv("MAX_INBOX_WAIT_SECONDS", "120"))
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+INFLIGHT_KEY = "ridefleet:inflight"   # corridas aceitas e ainda nao concluidas
+# Espera entre cada passo da saga (confirm/in_transit/complete). Antes era
+# 1s fixo (~3s por corrida). Baixar acelera muito o processamento e ajuda a
+# drenar a fila antes dos locks expirarem. 0 = o mais rapido possivel.
+SAGA_STEP_DELAY = float(os.getenv("SAGA_STEP_DELAY", "0.1"))
 
 
 def _parse_iso(raw: str | None):
@@ -55,6 +67,27 @@ def _nao_da_mais_para_pegar(ride: dict) -> bool:
         if (datetime.utcnow() - base).total_seconds() > MAX_INBOX_WAIT_S:
             return True
     return False
+
+
+async def _release_slot() -> None:
+    """Decrementa o contador de corridas em andamento (libera 1 vaga de
+    capacidade). Chamado sempre que uma corrida sai da fila (concluida ou
+    descartada), para o /rides/incoming voltar a aceitar."""
+    try:
+        r = aioredis.from_url(REDIS_URL, decode_responses=True)
+        val = await r.decr(INFLIGHT_KEY)
+        if val < 0:
+            await r.set(INFLIGHT_KEY, 0)
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def _ack(msg_id) -> None:
+    """ACK na inbox + libera a vaga de capacidade (uma coisa nao pode existir
+    sem a outra: toda corrida que sai da fila devolve sua vaga)."""
+    await ack_inbox(msg_id)
+    await _release_slot()
 
 
 async def _get_session_factory():
@@ -153,7 +186,7 @@ async def inbox_worker():
     Worker principal da inbox.
     Roda em background e processa corridas delegadas recebidas.
     """
-    consumer = f"{SERVICE_NAME}-inbox-worker"
+    consumer = f"{INSTANCE_ID}-inbox-worker"
     session_factory = await _get_session_factory()
 
     logger.info("Inbox worker iniciado.", extra={"evento": "worker_start"})
@@ -166,13 +199,18 @@ async def inbox_worker():
             claimed = await reclaim_inbox(consumer=consumer)
             vistos = {m["msg_id"] for m in pending}
             claimed = [m for m in claimed if m["msg_id"] not in vistos]
-            messages = pending + claimed
+            vistos |= {m["msg_id"] for m in claimed}
 
-            leu_nova = False
-            if not messages:
-                # 3) Sem pendentes: bloqueia esperando corrida nova
-                messages = await dequeue_inbox(consumer=consumer, count=1, block_ms=5000)
-                leu_nova = bool(messages)
+            # 3) SEMPRE tenta ler corridas NOVAS. As pendentes NAO podem
+            #    bloquear a leitura de novas delegacoes — senao uma unica
+            #    corrida presa em retry monopoliza o worker e o grupo para
+            #    de receber (starvation). Bloqueio curto se ja ha pendentes,
+            #    maior se nao ha nada para fazer.
+            block_ms = 1000 if (pending or claimed) else 5000
+            novas = await dequeue_inbox(consumer=consumer, count=5, block_ms=block_ms)
+            novas = [m for m in novas if m["msg_id"] not in vistos]
+            messages = pending + claimed + novas
+            leu_nova = bool(novas)
 
             resolvidas = 0  # concluídas OU descartadas (saíram da fila)
 
@@ -203,7 +241,7 @@ async def inbox_worker():
                                     r.status = RideStatus.CANCELLED
                                     r.updated_at = datetime.utcnow()
                                     await db.commit()
-                            await ack_inbox(msg_id)
+                            await _ack(msg_id)
                             resolvidas += 1
                             log_ride_event(
                                 "corrida_delegada_descartada",
@@ -228,13 +266,71 @@ async def inbox_worker():
                         estado_novo="match",
                     )
 
-                    # 3. Adquire lock no Core
-                    await core_client.acquire_lock(ride_uuid, ttl=60)
+                    # 3. Adquire lock no Core. Um 409 aqui significa "lock ja
+                    #    detido" — como somos o vencedor designado (o Core ja nos
+                    #    transferiu o lock na atribuicao), seguimos sem falhar em
+                    #    vez de retentar em loop e prender a corrida.
+                    try:
+                        await core_client.acquire_lock(ride_uuid, ttl=60)
+                    except httpx.HTTPStatusError as he:
+                        code = he.response.status_code if he.response is not None else None
+                        if code == 409:
+                            log_ride_event("lock_ja_detido", corrida_id=ride_uuid, nivel="WARN")
+                        else:
+                            raise
 
-                    # 4. Progride saga no Core e reflete o status no banco local
+                    # 3b. Idempotencia: se o Core JA concluiu/cancelou esta
+                    #     corrida (ex.: um processamento anterior avancou a saga
+                    #     mas nao chegou a dar ACK por um restart), NAO reenvia
+                    #     transicoes — apenas sincroniza o estado local e
+                    #     finaliza. Sem isto, reenviar 'confirm' numa corrida
+                    #     'complete' gera 422 em loop e prende a fila.
+                    estado_core = None
+                    try:
+                        st = await core_client.get_ride_status(ride_uuid)
+                        if isinstance(st, dict):
+                            estado_core = st.get("state") or st.get("status")
+                    except Exception:
+                        estado_core = None
+
+                    if estado_core in ("complete", "cancelled"):
+                        novo = (RideStatus.COMPLETE if estado_core == "complete"
+                                else RideStatus.CANCELLED)
+                        async with session_factory() as db:
+                            r = await db.get(RideORM, ride_uuid)
+                            if r:
+                                r.status = novo
+                                r.updated_at = datetime.utcnow()
+                                await db.commit()
+                            await _free_driver(db, ride_uuid)
+                        await core_client.release_lock(ride_uuid)
+                        await _ack(msg_id)
+                        resolvidas += 1
+                        log_ride_event(
+                            "corrida_delegada_sincronizada",
+                            corrida_id=ride_uuid,
+                            estado_novo=estado_core,
+                        )
+                        continue
+
+                    # 4. Progride saga no Core e reflete o status no banco local.
+                    #    Tolera 422 por passo (Core ja nesse estado / terminal):
+                    #    reenviar nao adianta, entao apenas segue e finaliza.
                     for state in ("confirm", "in_transit", "complete"):
-                        await asyncio.sleep(1)  # simula processamento real
-                        await core_client.transition_ride_core(ride_uuid, state)
+                        await asyncio.sleep(SAGA_STEP_DELAY)  # ritmo da saga (configuravel)
+                        try:
+                            await core_client.transition_ride_core(ride_uuid, state)
+                        except httpx.HTTPStatusError as he:
+                            code = he.response.status_code if he.response is not None else None
+                            if code == 422:
+                                log_ride_event(
+                                    "transicao_saga_ignorada",
+                                    corrida_id=ride_uuid,
+                                    estado_novo=state,
+                                    nivel="WARN",
+                                )
+                            else:
+                                raise
                         async with session_factory() as db:
                             r = await db.get(RideORM, ride_uuid)
                             if r:
@@ -251,7 +347,7 @@ async def inbox_worker():
                     await core_client.release_lock(ride_uuid)
                     async with session_factory() as db:
                         await _free_driver(db, ride_uuid)
-                    await ack_inbox(msg_id)
+                    await _ack(msg_id)
                     resolvidas += 1
 
                     log_ride_event(
@@ -265,6 +361,33 @@ async def inbox_worker():
                         f"Erro ao processar corrida delegada {ride_uuid}: {e}",
                         extra={"evento": "inbox_processing_error", "corrida_id": ride_uuid}
                     )
+                    # Rede de seguranca: se a saga falhou e a corrida nao pode
+                    # mais ser concluida (lock expirado / tempo maximo), DESCARTA
+                    # em vez de retentar para sempre — libera o motorista e
+                    # cancela a corrida local, para a fila nao ficar presa.
+                    if _nao_da_mais_para_pegar(ride):
+                        try:
+                            async with session_factory() as db:
+                                r = await db.get(RideORM, ride_uuid)
+                                if r and r.status not in (RideStatus.COMPLETE, RideStatus.CANCELLED):
+                                    r.status = RideStatus.CANCELLED
+                                    r.updated_at = datetime.utcnow()
+                                    await db.commit()
+                                await _free_driver(db, ride_uuid)
+                            await _ack(msg_id)
+                            resolvidas += 1
+                            log_ride_event(
+                                "corrida_delegada_descartada",
+                                corrida_id=ride_uuid,
+                                nivel="WARN",
+                                estado_novo="cancelled",
+                                motivo="saga_falhou_persistente",
+                            )
+                        except Exception as e2:
+                            logger.error(
+                                f"Falha ao descartar corrida presa {ride_uuid}: {e2}",
+                                extra={"evento": "discard_error", "corrida_id": ride_uuid},
+                            )
 
             # Pacing: se só havia pendentes para retentar (sem corrida nova e
             # nada resolvido), espera um pouco para não girar o loop a seco.

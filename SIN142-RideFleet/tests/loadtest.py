@@ -29,9 +29,9 @@ except ImportError:
 
 
 # ── Core (contrato de GRUPO: X-API-Key + camelCase) ─────────────────────────
-CORE_ENDPOINT = "http://localhost:8080/api/v1/rides"   # Core local (sem barra no fim!)
-API_KEY  = "rfk_97b58fd30b3d1c76f5ddabe8dffe9190"   # passe com --api-key (vinda do /groups/register)
-GROUP_ID = "group-01"   # grupo de ORIGEM (diferente do seu, p/ seu grupo poder vencer)
+CORE_ENDPOINT = "http://host.docker.internal:8080/api/v1/rides"   # Core local (sem barra no fim!)
+API_KEY  = "rfk_948973b71acc4fc3cb2364d6e3d479d1"   # passe com --api-key (vinda do /groups/register)
+GROUP_ID = "group-01b"   # grupo de ORIGEM (diferente do seu, p/ seu grupo poder vencer)
 
 # ── Seu servico (para comprovar o recebimento da delegacao) ──────────────────
 SERVICE_URL = "http://localhost:8000"

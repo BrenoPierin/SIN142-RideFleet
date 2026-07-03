@@ -10,7 +10,7 @@ scrape_configs:
     static_configs:
       - targets:
           - ridefleet-grupo-a-1:8000
-          - ridefleet-grupo-a-2:8000
+          #- ridefleet-grupo-a-2:8000
         labels:
           group: ridefleet-grupo-a
 
